@@ -70,7 +70,7 @@ fn handle_output(terminated: Arc<AtomicBool>, mut stream: TcpStream) {
 fn handle_input(terminated: Arc<AtomicBool>, mut stream: TcpStream) {
     let mut clip = Clipboard::new().unwrap();
     let peer = stream.peer_addr().unwrap();
-    let mut buf = vec![0; 1024 * 1024 * 1024]; // 1M
+    let mut buf = vec![0; 1024 * 1024]; // 1M
     loop {
         match postcard::from_io::<CbData, _>((&mut stream, buf.as_mut_slice())) {
             // silly workaround for a closed connection
