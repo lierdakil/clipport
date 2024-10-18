@@ -8,11 +8,10 @@ On one machine, run `clipport server -p <port>`. On any number of other
 machines, run `clipport client <server ip>:<port>`. Your clipboard is now
 synced.
 
-For example, on `192.168.0.1` run `clipport server -p 1234`, and on
+For example, on `192.168.0.1` run `clipport server -p 5563`, and on
 `192.168.0.2` run `clipport client 192.168.0.1:1234`.
 
 ## Caveats
 
 - Barely tested, use at your own risk.
-- Uses a fixed-size read buffer of 1M per client.
 - No authentication, encryption, etc. Only use in trusted environments.
