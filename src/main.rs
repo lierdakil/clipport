@@ -70,15 +70,18 @@ async fn handle_output(peer: impl Display, mut stream: WriteHalf<'_>) -> anyhow:
 
 async fn handle_input(peer: impl Display, mut stream: ReadHalf<'_>) -> anyhow::Result<()> {
     let mut clip = Clipboard::new().unwrap();
+    let mut buf = vec![];
     loop {
-        let mut buf = vec![];
         let x = loop {
             let n = stream.read_buf(&mut buf).await?;
             if matches!(n, 0) {
                 return Ok(());
             }
-            match postcard::from_bytes::<CbData>(&buf) {
-                Ok(x) => break x,
+            match postcard::take_from_bytes::<CbData>(&buf) {
+                Ok((x, rest)) => {
+                    buf = rest.to_vec();
+                    break x;
+                }
                 Err(postcard::Error::DeserializeUnexpectedEnd) => {
                     continue;
                 }
