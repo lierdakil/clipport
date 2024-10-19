@@ -1,5 +1,6 @@
 use arboard::{Clipboard, ImageData};
 use clap::Parser;
+use derive_more::derive::From;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, fmt::Display, time::Duration};
 use tokio::{
@@ -10,10 +11,10 @@ use tokio::{
     },
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, From)]
 enum CbData {
     Text(String),
-    Image(#[serde(with = "ImageDataDef")] ImageData<'static>),
+    Image(ImageDataEq),
 }
 
 impl std::fmt::Display for CbData {
@@ -25,15 +26,34 @@ impl std::fmt::Display for CbData {
     }
 }
 
-impl PartialEq for CbData {
+impl From<ImageData<'static>> for CbData {
+    fn from(value: ImageData<'static>) -> Self {
+        ImageDataEq::from(value).into()
+    }
+}
+
+#[derive(Serialize, Deserialize, From)]
+#[serde(transparent)]
+struct ImageDataEq(#[serde(with = "ImageDataDef")] arboard::ImageData<'static>);
+
+impl PartialEq for ImageDataEq {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Text(l0), Self::Text(r0)) => l0 == r0,
-            (Self::Image(l0), Self::Image(r0)) => {
-                l0.width == r0.width && l0.height == r0.height && l0.bytes == r0.bytes
-            }
-            _ => false,
-        }
+        self.0.width == other.0.width
+            && self.0.height == other.0.height
+            && self.0.bytes == other.0.bytes
+    }
+}
+
+impl std::ops::Deref for ImageDataEq {
+    type Target = ImageData<'static>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ImageDataEq {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
@@ -47,13 +67,13 @@ struct ImageDataDef<'a> {
 
 async fn handle_output(peer: impl Display, mut stream: WriteHalf<'_>) -> anyhow::Result<()> {
     let mut clip = Clipboard::new().unwrap();
-    let mut last_cb_data = None;
+    let mut last_cb_data: Option<CbData> = None;
     loop {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let new_cb_data = if let Ok(text) = clip.get_text() {
-            Some(CbData::Text(text))
+            Some(text.into())
         } else if let Ok(img) = clip.get_image() {
-            Some(CbData::Image(img))
+            Some(img.into())
         } else {
             None
         };
@@ -91,13 +111,17 @@ async fn handle_input(peer: impl Display, mut stream: ReadHalf<'_>) -> anyhow::R
         log::trace!("Got clipboard from {}: {x}", peer);
         match x {
             CbData::Text(text) => {
-                if let Err(e) = clip.set_text(text) {
-                    log::error!("{e}");
+                if clip.get_text().ok().as_ref() != Some(&text) {
+                    if let Err(e) = clip.set_text(text) {
+                        log::error!("{e}");
+                    }
                 }
             }
             CbData::Image(image_data) => {
-                if let Err(e) = clip.set_image(image_data) {
-                    log::error!("{e}");
+                if clip.get_image().ok().map(ImageDataEq).as_ref() != Some(&image_data) {
+                    if let Err(e) = clip.set_image(image_data.0) {
+                        log::error!("{e}");
+                    }
                 }
             }
         }
