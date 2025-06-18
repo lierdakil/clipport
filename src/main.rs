@@ -1,8 +1,9 @@
-use arboard::{Clipboard, ImageData};
+mod clipboard;
+
 use clap::Parser;
 use derive_more::derive::From;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, fmt::Display, time::Duration};
+use std::{fmt::Display, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{
@@ -11,10 +12,12 @@ use tokio::{
     },
 };
 
+use self::clipboard::{Clipboard, Image, WaylandClipboard};
+
 #[derive(Serialize, Deserialize, PartialEq, From)]
 enum CbData {
     Text(String),
-    Image(ImageDataEq),
+    Image(Image<'static>),
 }
 
 impl std::fmt::Display for CbData {
@@ -26,53 +29,22 @@ impl std::fmt::Display for CbData {
     }
 }
 
-impl From<ImageData<'static>> for CbData {
-    fn from(value: ImageData<'static>) -> Self {
-        ImageDataEq::from(value).into()
-    }
-}
-
-#[derive(Serialize, Deserialize, From)]
-#[serde(transparent)]
-struct ImageDataEq(#[serde(with = "ImageDataDef")] arboard::ImageData<'static>);
-
-impl PartialEq for ImageDataEq {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.width == other.0.width
-            && self.0.height == other.0.height
-            && self.0.bytes == other.0.bytes
-    }
-}
-
-impl std::ops::Deref for ImageDataEq {
-    type Target = ImageData<'static>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for ImageDataEq {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "ImageData")]
-struct ImageDataDef<'a> {
-    pub width: usize,
-    pub height: usize,
-    pub bytes: Cow<'a, [u8]>,
-}
-
-async fn handle_output(peer: impl Display, mut stream: WriteHalf<'_>) -> anyhow::Result<()> {
-    let mut clip = Clipboard::new().unwrap();
+async fn handle_output(
+    peer: impl Display,
+    mut stream: WriteHalf<'_>,
+    wayland: bool,
+) -> anyhow::Result<()> {
+    let mut clip: Box<dyn Clipboard + Send> = if wayland {
+        Box::new(WaylandClipboard)
+    } else {
+        Box::new(arboard::Clipboard::new().unwrap())
+    };
     let mut last_cb_data: Option<CbData> = None;
     loop {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let new_cb_data = if let Ok(text) = clip.get_text() {
+        let new_cb_data = if let Ok(text) = clip.get_text().inspect_err(log) {
             Some(text.into())
-        } else if let Ok(img) = clip.get_image() {
+        } else if let Ok(img) = clip.get_image().inspect_err(log) {
             Some(img.into())
         } else {
             None
@@ -88,8 +60,16 @@ async fn handle_output(peer: impl Display, mut stream: WriteHalf<'_>) -> anyhow:
     }
 }
 
-async fn handle_input(peer: impl Display, mut stream: ReadHalf<'_>) -> anyhow::Result<()> {
-    let mut clip = Clipboard::new().unwrap();
+async fn handle_input(
+    peer: impl Display,
+    mut stream: ReadHalf<'_>,
+    wayland: bool,
+) -> anyhow::Result<()> {
+    let mut clip: Box<dyn Clipboard + Send> = if wayland {
+        Box::new(WaylandClipboard)
+    } else {
+        Box::new(arboard::Clipboard::new().unwrap())
+    };
     let mut buf = vec![];
     loop {
         let x = loop {
@@ -111,15 +91,15 @@ async fn handle_input(peer: impl Display, mut stream: ReadHalf<'_>) -> anyhow::R
         log::trace!("Got clipboard from {}: {x}", peer);
         match x {
             CbData::Text(text) => {
-                if clip.get_text().ok().as_ref() != Some(&text) {
+                if clip.get_text().inspect_err(log).ok().as_ref() != Some(&text) {
                     if let Err(e) = clip.set_text(text) {
                         log::error!("{e}");
                     }
                 }
             }
             CbData::Image(image_data) => {
-                if clip.get_image().ok().map(ImageDataEq).as_ref() != Some(&image_data) {
-                    if let Err(e) = clip.set_image(image_data.0) {
+                if clip.get_image().inspect_err(log).ok().as_ref() != Some(&image_data) {
+                    if let Err(e) = clip.set_image(image_data) {
                         log::error!("{e}");
                     }
                 }
@@ -128,11 +108,17 @@ async fn handle_input(peer: impl Display, mut stream: ReadHalf<'_>) -> anyhow::R
     }
 }
 
+fn log(err: &impl std::fmt::Display) {
+    log::debug!("Error: {err}");
+}
+
 #[derive(clap::Parser)]
 #[command(version, about)]
 struct Args {
     #[command(subcommand)]
     command: Cmd,
+    #[arg(long)]
+    wayland: bool,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -146,14 +132,14 @@ enum Cmd {
     },
 }
 
-async fn handle_client(peer: impl Display, mut stream: TcpStream) {
+async fn handle_client(peer: impl Display, mut stream: TcpStream, wayland: bool) {
     let (read, write) = stream.split();
     let err = tokio::select! {
-        err = handle_input(&peer, read) => {
+        err = handle_input(&peer, read, wayland) => {
             log::info!("handle_input for {peer} terminated");
             err
         },
-        err = handle_output(&peer, write) => {
+        err = handle_output(&peer, write, wayland) => {
             log::info!("handle_output for {peer} terminated");
             err
         }
@@ -176,7 +162,7 @@ async fn main() {
                 match listener.accept().await {
                     Ok((stream, peer)) => {
                         log::info!("New connection from {peer}");
-                        tasks.spawn(handle_client(peer, stream));
+                        tasks.spawn(handle_client(peer, stream, args.wayland));
                     }
                     Err(e) => log::error!("{e}"),
                 }
@@ -185,7 +171,7 @@ async fn main() {
         Cmd::Client { host } => {
             let stream = TcpStream::connect(&host).await.unwrap();
             log::info!("Connected to {host}");
-            handle_client(host, stream).await;
+            handle_client(host, stream, args.wayland).await;
         }
     }
 }
