@@ -119,6 +119,8 @@ struct Args {
     command: Cmd,
     #[arg(long)]
     wayland: bool,
+    #[arg(long)]
+    no_wayland: bool,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -154,6 +156,9 @@ async fn main() {
     pretty_env_logger::init();
     let args = Args::parse();
     let mut tasks = tokio::task::JoinSet::new();
+    let wayland =
+        !args.no_wayland && (args.wayland || std::env::var_os("WAYLAND_DISPLAY").is_some());
+    log::info!("Using {}", if wayland { "wayland" } else { "x11" });
     match args.command {
         Cmd::Server { port } => {
             let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
@@ -162,7 +167,7 @@ async fn main() {
                 match listener.accept().await {
                     Ok((stream, peer)) => {
                         log::info!("New connection from {peer}");
-                        tasks.spawn(handle_client(peer, stream, args.wayland));
+                        tasks.spawn(handle_client(peer, stream, wayland));
                     }
                     Err(e) => log::error!("{e}"),
                 }
@@ -171,7 +176,7 @@ async fn main() {
         Cmd::Client { host } => {
             let stream = TcpStream::connect(&host).await.unwrap();
             log::info!("Connected to {host}");
-            handle_client(host, stream, args.wayland).await;
+            handle_client(host, stream, wayland).await;
         }
     }
 }
