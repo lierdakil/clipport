@@ -88,7 +88,7 @@ async fn handle_input(
                 Err(err) => return Err(err.into()),
             };
         };
-        log::trace!("Got clipboard from {}: {x}", peer);
+        log::trace!("Got clipboard from {peer}: {x}");
         match x {
             CbData::Text(text) => {
                 if clip.get_text().inspect_err(log).ok().as_ref() != Some(&text) {
